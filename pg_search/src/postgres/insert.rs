@@ -445,3 +445,42 @@ unsafe fn insertcleanup_mutable(indexrel: &PgSearchRelation, mode: InsertModeMut
 
     true
 }
+
+#[cfg(any(test, feature = "pg_test"))]
+#[pgrx::pg_schema]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use pgrx::prelude::*;
+
+    #[pg_test]
+    fn insertcleanup_panics_on_completed_mode() {
+        Spi::run(
+            "CREATE TEMP TABLE insertcleanup_completed_guard_test \
+             (id BIGINT PRIMARY KEY, value TEXT) ON COMMIT DROP;",
+        )
+        .expect("should create temp test table");
+        Spi::run(
+            "CREATE INDEX idx_insertcleanup_completed_guard_test \
+             ON insertcleanup_completed_guard_test \
+             USING bm25 (id, value) \
+             WITH (key_field = 'id');",
+        )
+        .expect("should create test index");
+
+        let index_oid = Spi::get_one::<pg_sys::Oid>(
+            "SELECT 'idx_insertcleanup_completed_guard_test'::regclass::oid;",
+        )
+        .expect("should resolve index oid")
+        .expect("index oid should not be null");
+
+        let indexrel = PgSearchRelation::with_lock(index_oid, pg_sys::AccessShareLock as _);
+        let state = unsafe { InsertState::new(&indexrel).expect("should initialize insert state") };
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            insertcleanup(&state, InsertMode::Completed);
+        }));
+        assert!(result.is_err(), "expected Completed-mode cleanup to panic");
+    }
+}

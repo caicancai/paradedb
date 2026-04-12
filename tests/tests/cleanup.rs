@@ -104,3 +104,36 @@ fn bulk_insert_segments_behavior(mut conn: PgConnection) {
         .0 as usize;
     assert_eq!(nsegments, 2);
 }
+
+#[rstest]
+fn bulk_insert_segments_exact_threshold(mut conn: PgConnection) {
+    let mutable_segment_rows = 10;
+    format!(
+        r#"
+        SET maintenance_work_mem = '1GB';
+        SET work_mem = '1GB';
+        DROP TABLE IF EXISTS test_table;
+        CREATE TABLE test_table (id SERIAL PRIMARY KEY, value TEXT NOT NULL);
+
+        CREATE INDEX idxtest_table ON public.test_table
+        USING bm25 (id, value)
+        WITH (
+            key_field = 'id',
+            mutable_segment_rows = {mutable_segment_rows}
+        );
+    "#
+    )
+    .execute(&mut conn);
+
+    // Insert exactly at the mutable-segment threshold and verify we still have a single segment.
+    format!(
+        "INSERT INTO test_table (value) SELECT md5(random()::text) FROM generate_series(1, {})",
+        mutable_segment_rows
+    )
+    .execute(&mut conn);
+
+    let nsegments = "SELECT COUNT(*) FROM paradedb.index_info('idxtest_table');"
+        .fetch_one::<(i64,)>(&mut conn)
+        .0 as usize;
+    assert_eq!(nsegments, 1);
+}
